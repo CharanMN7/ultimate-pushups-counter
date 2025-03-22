@@ -35,10 +35,22 @@ async def health_check():
     """Health check endpoint for testing the server"""
     return {"status": "healthy"}
 
+@app.get("/reset")
+async def reset_counter():
+    """Reset the pushup counter"""
+    global pushup_detector
+    pushup_detector = PushupDetector()  # Create a fresh instance
+    return {"status": "counter reset"}
+
 @app.websocket("/ws/process-video")
 async def process_video(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connection accepted")
+    
+    # Reset the counter for each new connection
+    global pushup_detector
+    pushup_detector = PushupDetector()
+    logger.info("Pushup counter reset for new session")
     
     try:
         while True:
@@ -61,6 +73,11 @@ async def process_video(websocket: WebSocket):
                         logger.error("Failed to decode image")
                         await websocket.send_json({"error": "Failed to decode image"})
                         continue
+                    
+                    # Check if we should reset the counter
+                    if frame_data.get("reset", False):
+                        pushup_detector = PushupDetector()
+                        logger.info("Counter reset requested by client")
                     
                     # Process the frame with the pushup detector
                     count, pushup_type, frame_with_keypoints = pushup_detector.process_frame(frame)

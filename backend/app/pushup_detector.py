@@ -8,10 +8,10 @@ class PushupDetector:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1,
+            model_complexity=2,  # Increase model complexity for better accuracy
             enable_segmentation=False,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_detection_confidence=0.6,  # Increased from 0.5
+            min_tracking_confidence=0.6    # Increased from 0.5
         )
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
@@ -23,6 +23,11 @@ class PushupDetector:
         
         # Track the lowest position during a push-up
         self.min_angle = 180
+        
+        # Add debounce mechanism to prevent false counts
+        self.frame_count = 0
+        self.required_frames = 3  # Number of consecutive frames required to confirm a state
+        self.current_stage_frames = 0
         
     def calculate_angle(self, a, b, c):
         """
@@ -118,51 +123,74 @@ class PushupDetector:
             # Extract landmarks
             landmarks = results.pose_landmarks.landmark
             
-            # Get coordinates for left and right sides
-            left_shoulder = [landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x, 
-                            landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-            left_elbow = [landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x, 
-                         landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
-            left_wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x, 
-                         landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+            # Check if all required landmarks are visible
+            required_landmarks = [
+                self.mp_pose.PoseLandmark.LEFT_SHOULDER,
+                self.mp_pose.PoseLandmark.LEFT_ELBOW,
+                self.mp_pose.PoseLandmark.LEFT_WRIST,
+                self.mp_pose.PoseLandmark.RIGHT_SHOULDER,
+                self.mp_pose.PoseLandmark.RIGHT_ELBOW,
+                self.mp_pose.PoseLandmark.RIGHT_WRIST
+            ]
             
-            right_shoulder = [landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x, 
-                             landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
-            right_elbow = [landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].x, 
-                          landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].y]
-            right_wrist = [landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].x, 
-                          landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].y]
-            
-            # Calculate elbow angles
-            left_angle = self.calculate_angle(left_shoulder, left_elbow, left_wrist)
-            right_angle = self.calculate_angle(right_shoulder, right_elbow, right_wrist)
-            
-            # Average angle of both arms
-            avg_angle = (left_angle + right_angle) / 2
-            
-            # Determine pushup type when in down position
-            if avg_angle < 110:  # Using down position to determine type
-                self.pushup_type = self.determine_pushup_type(landmarks)
+            if all(landmarks[lm.value].visibility > 0.7 for lm in required_landmarks):
+                # Get coordinates for left and right sides
+                left_shoulder = [landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x, 
+                                landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+                left_elbow = [landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x, 
+                             landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+                left_wrist = [landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].x, 
+                             landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST.value].y]
                 
-                # Track the lowest position
-                if avg_angle < self.min_angle:
-                    self.min_angle = avg_angle
-            
-            # Visualize angles on frame
-            cv2.putText(annotated_image, f"Angle: {int(avg_angle)}", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Push-up counter logic
-            if avg_angle > 150:
-                if self.stage == 'down' and self.min_angle < 110:  # Confirm we had a valid down position
-                    self.counter += 1
-                    self.stage = 'up'
-                    self.min_angle = 180  # Reset for next pushup
-                elif self.stage != 'up':
-                    self.stage = 'up'
-            elif avg_angle < 110:
-                if self.stage == 'up':
-                    self.stage = 'down'
+                right_shoulder = [landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x, 
+                                 landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y]
+                right_elbow = [landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].x, 
+                              landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].y]
+                right_wrist = [landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].x, 
+                              landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST.value].y]
+                
+                # Calculate elbow angles
+                left_angle = self.calculate_angle(left_shoulder, left_elbow, left_wrist)
+                right_angle = self.calculate_angle(right_shoulder, right_elbow, right_wrist)
+                
+                # Average angle of both arms
+                avg_angle = (left_angle + right_angle) / 2
+                
+                # Determine pushup type when in down position
+                if avg_angle < 100:  # Using down position to determine type (stricter threshold)
+                    self.pushup_type = self.determine_pushup_type(landmarks)
+                    
+                    # Track the lowest position
+                    if avg_angle < self.min_angle:
+                        self.min_angle = avg_angle
+                
+                # Visualize angles on frame
+                cv2.putText(annotated_image, f"Angle: {int(avg_angle)}", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Push-up counter logic with state debouncing
+                if avg_angle > 160:  # More strict up position (was 150)
+                    self.current_stage_frames = self.current_stage_frames + 1 if self.stage != 'up' else self.required_frames
+                    
+                    if self.current_stage_frames >= self.required_frames:
+                        if self.stage == 'down' and self.min_angle < 100:  # Stricter lower threshold (was 110)
+                            self.counter += 1
+                            self.stage = 'up'
+                            self.min_angle = 180  # Reset for next pushup
+                            self.current_stage_frames = 0
+                        elif self.stage != 'up':
+                            self.stage = 'up'
+                            self.current_stage_frames = 0
+                elif avg_angle < 100:  # More strict down position (was 110)
+                    self.current_stage_frames = self.current_stage_frames + 1 if self.stage != 'down' else self.required_frames
+                    
+                    if self.current_stage_frames >= self.required_frames and self.stage == 'up':
+                        self.stage = 'down'
+                        self.current_stage_frames = 0
+            else:
+                # If required landmarks are not visible, show warning
+                cv2.putText(annotated_image, "Position your body to be fully visible", 
+                           (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             
             # Display pushup count and type
             cv2.putText(annotated_image, f"Count: {self.counter}", 
@@ -171,5 +199,10 @@ class PushupDetector:
                        (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             cv2.putText(annotated_image, f"Stage: {self.stage}", 
                        (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+        else:
+            # No pose detected
+            cv2.putText(annotated_image, "No pose detected - adjust position", 
+                       (50, annotated_image.shape[0] // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             
         return self.counter, self.pushup_type, annotated_image 

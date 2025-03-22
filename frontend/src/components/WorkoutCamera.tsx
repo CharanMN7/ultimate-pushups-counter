@@ -4,9 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 
 interface WorkoutCameraProps {
   onPushupCounted: (count: number, type: string) => void;
+  isRecording: boolean;
 }
 
-export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
+export default function WorkoutCamera({ onPushupCounted, isRecording }: WorkoutCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [socket, setSocket] = useState<WebSocket | null>(null);
@@ -15,29 +16,79 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const isFirstFrameRef = useRef(true);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 5;
 
-  // Setup WebSocket connection
-  useEffect(() => {
+  // Stop camera function
+  const stopCamera = () => {
+    if (streamRef.current) {
+      const tracks = streamRef.current.getTracks();
+      tracks.forEach(track => {
+        console.log("Stopping track:", track.kind);
+        track.stop();
+      });
+      streamRef.current = null;
+      setCameraReady(false);
+
+      // Clear video source
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+
+      console.log("Camera stopped");
+    }
+  };
+
+  // WebSocket connection setup with reconnection logic
+  const setupWebSocket = () => {
+    if (!isRecording) return null;
+
     // Use environment variable for WebSocket URL with fallback
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/process-video';
     console.log("Connecting to WebSocket:", wsUrl);
+
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log('WebSocket connection established');
       setIsConnected(true);
       setError(null);
+      reconnectAttemptsRef.current = 0; // Reset attempts counter on successful connection
     };
 
-    ws.onclose = () => {
-      console.log('WebSocket connection closed');
+    ws.onclose = (event) => {
+      console.log('WebSocket connection closed', event);
       setIsConnected(false);
+
+      // Only attempt reconnect if we're still recording and haven't exceeded max attempts
+      if (isRecording && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttemptsRef.current += 1;
+        console.log(`Attempting to reconnect (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+
+        // Clear any existing timeout
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+        }
+
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        const delay = Math.min(1000 * (2 ** (reconnectAttemptsRef.current - 1)), 16000);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isRecording) {
+            const newWs = setupWebSocket();
+            if (newWs) setSocket(newWs);
+          }
+        }, delay);
+      } else if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setError('Unable to maintain connection to the server. Please refresh the page and try again.');
+      }
     };
 
     ws.onerror = (event) => {
       console.error('WebSocket error:', event);
-      setError('Failed to connect to the server. Please try again later.');
-      setIsConnected(false);
+      setError('Connection error. Please check if the server is running.');
     };
 
     ws.onmessage = (event) => {
@@ -48,6 +99,9 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
           console.error('Server error:', data.error);
           setError(`Server error: ${data.error}`);
         } else {
+          // Clear any error that might have been displayed
+          if (error) setError(null);
+
           // Update push-up count and type if they've changed
           if (data.count !== lastCount || data.pushup_type !== lastType) {
             setLastCount(data.count);
@@ -64,7 +118,14 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
             if (ctx) {
               const img = new Image();
               img.onload = () => {
+                // Clear canvas first
+                ctx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
                 ctx.drawImage(img, 0, 0, canvasRef.current!.width, canvasRef.current!.height);
+
+                // Draw a continuous tracking indicator
+                ctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+                ctx.font = 'bold 16px Arial';
+                ctx.fillText('Tracking Active', 10, canvasRef.current!.height - 20);
               };
               img.src = data.processed_image;
             }
@@ -75,18 +136,74 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
       }
     };
 
-    setSocket(ws);
+    return ws;
+  };
+
+  // Reset counter when component remounts
+  useEffect(() => {
+    if (isRecording) {
+      // Reset our internal state
+      setLastCount(0);
+      setLastType('none');
+      isFirstFrameRef.current = true;
+
+      // Also make a reset request to the backend
+      fetch('http://localhost:8000/reset')
+        .then(response => response.json())
+        .then(data => {
+          console.log("Counter reset response:", data);
+        })
+        .catch(err => {
+          console.error("Failed to reset counter:", err);
+        });
+    }
+  }, [isRecording]);
+
+  // Monitor isRecording prop changes
+  useEffect(() => {
+    if (!isRecording) {
+      // If recording is stopped, also stop the camera
+      stopCamera();
+
+      // Clean up WebSocket connection
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        socket.close();
+        setSocket(null);
+        setIsConnected(false);
+      }
+
+      // Clear any reconnection timeouts
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    }
+  }, [isRecording, socket]);
+
+  // Setup WebSocket connection
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const ws = setupWebSocket();
+    if (ws) setSocket(ws);
 
     // Cleanup function
     return () => {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close();
       }
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
     };
-  }, [onPushupCounted]);
+  }, [isRecording]);
 
   // Initialize webcam
   useEffect(() => {
+    if (!isRecording) return;
+
     const setupCamera = async () => {
       try {
         console.log("Setting up camera...");
@@ -94,12 +211,15 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
           video: {
             facingMode: 'user',
             width: { ideal: 640 },
-            height: { ideal: 480 }
+            height: { ideal: 480 },
+            frameRate: { ideal: 30 }  // Request higher framerate
           },
           audio: false
         });
 
         console.log("Camera stream obtained:", stream);
+        // Store the stream reference for later cleanup
+        streamRef.current = stream;
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -126,107 +246,153 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
 
     setupCamera();
 
-    // Cleanup function
+    // Cleanup function when component unmounts
     return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        const tracks = stream.getTracks();
-        tracks.forEach(track => track.stop());
-      }
+      stopCamera();
     };
-  }, []);
+  }, [isRecording]);
 
   // Send video frames to server
   useEffect(() => {
-    if (!socket || !isConnected || !videoRef.current || !canvasRef.current || !cameraReady) {
+    if (!socket || !isConnected || !videoRef.current || !canvasRef.current || !cameraReady || !isRecording) {
       console.log("Not sending frames because:", {
         socketExists: !!socket,
         isConnected,
         videoExists: !!videoRef.current,
         canvasExists: !!canvasRef.current,
-        cameraReady
+        cameraReady,
+        isRecording
       });
       return;
     }
 
     console.log("Starting to send video frames");
+
     let animationFrameId: number;
-    const sendFrame = () => {
-      if (socket.readyState === WebSocket.OPEN && videoRef.current && canvasRef.current) {
+    let isProcessingFrame = false;
+    const frameInterval = 100; // Send a frame every 100ms (10 FPS) - reduced to be more reliable
+    let lastFrameTime = 0;
+
+    const sendFrame = (timestamp: number) => {
+      // Only send a new frame if we're not already processing and if enough time has passed
+      if (!isProcessingFrame && (timestamp - lastFrameTime > frameInterval) && socket.readyState === WebSocket.OPEN && videoRef.current && canvasRef.current) {
+        isProcessingFrame = true;
+        lastFrameTime = timestamp;
+
         const ctx = canvasRef.current.getContext('2d');
         if (ctx) {
-          // Draw the current video frame on the canvas
-          ctx.drawImage(
-            videoRef.current,
-            0, 0,
-            canvasRef.current.width,
-            canvasRef.current.height
-          );
-
-          // Convert to base64 and send to server
           try {
+            // Draw the current video frame on the canvas
+            ctx.drawImage(
+              videoRef.current,
+              0, 0,
+              canvasRef.current.width,
+              canvasRef.current.height
+            );
+
+            // Convert to base64 and send to server
             const imageData = canvasRef.current.toDataURL('image/jpeg', 0.7);
-            socket.send(JSON.stringify({ image: imageData }));
+
+            // For first frame only, send reset flag
+            if (isFirstFrameRef.current) {
+              socket.send(JSON.stringify({
+                image: imageData,
+                reset: true
+              }));
+              isFirstFrameRef.current = false;
+            } else {
+              socket.send(JSON.stringify({ image: imageData }));
+            }
+
+            // Add visual feedback that frame was sent
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.fillRect(canvasRef.current.width - 20, 10, 10, 10);
+
+            // Handle the response in the onmessage event
+            isProcessingFrame = false;
           } catch (err) {
-            console.error("Error sending frame:", err);
+            console.error('Error sending frame:', err);
+            isProcessingFrame = false;
           }
+        } else {
+          isProcessingFrame = false;
         }
       }
 
-      // Continue the loop
-      animationFrameId = requestAnimationFrame(sendFrame);
+      // Continue the animation loop if still recording
+      if (isRecording) {
+        animationFrameId = requestAnimationFrame(sendFrame);
+      }
     };
 
-    // Start the frame sending loop
+    // Start the animation loop
     animationFrameId = requestAnimationFrame(sendFrame);
 
     // Cleanup function
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [socket, isConnected, cameraReady]);
+  }, [socket, isConnected, cameraReady, isRecording]);
 
+  // UI rendering
   return (
-    <div className="flex flex-col items-center">
+    <div className="relative overflow-hidden rounded-lg bg-white w-full border border-gray-200 shadow-md">
       {error && (
-        <div className="mb-4 p-3 bg-red-500 text-white rounded-lg">
-          {error}
+        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-70 z-20 p-4">
+          <div className="bg-red-600 p-4 rounded-lg max-w-md text-center text-white">
+            <h3 className="text-xl font-bold mb-2">Error</h3>
+            <p>{error}</p>
+            {error.includes('server') && (
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-3 bg-white text-red-700 px-4 py-2 rounded font-semibold hover:bg-gray-200 transition-colors"
+              >
+                Refresh Page
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      <div className="relative w-full max-w-2xl mx-auto overflow-hidden rounded-lg bg-black">
-        {/* Video element to capture webcam - now visible */}
+      <div className="relative aspect-video">
+        {/* This video element is hidden but used to get camera stream */}
         <video
           ref={videoRef}
-          autoPlay
+          className="hidden"
           playsInline
-          muted
-          className="w-full h-auto"
         />
 
-        {/* Canvas to display processed frames - positioned on top of video */}
+        {/* Canvas where we display the processed frames */}
         <canvas
           ref={canvasRef}
-          className="absolute top-0 left-0 w-full h-full"
+          className="w-full h-full object-cover"
         />
 
         {/* Connection status indicator */}
-        <div className={`absolute top-2 right-2 px-2 py-1 rounded text-xs font-semibold ${isConnected ? 'bg-green-500' : 'bg-red-500'
-          }`}>
+        <div className={`absolute top-2 right-2 px-2 py-1 rounded-full text-xs font-bold ${isConnected ? 'bg-green-500' : 'bg-red-600'}`}>
           {isConnected ? 'Connected' : 'Disconnected'}
         </div>
 
-        {/* Camera status indicator */}
-        <div className={`absolute top-2 left-2 px-2 py-1 rounded text-xs font-semibold ${cameraReady ? 'bg-green-500' : 'bg-yellow-500'
-          }`}>
-          {cameraReady ? 'Camera Ready' : 'Camera Initializing...'}
-        </div>
+        {/* Loading state if camera not ready */}
+        {isRecording && !cameraReady && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-70">
+            <div className="text-white text-center">
+              <div className="animate-spin inline-block w-8 h-8 border-4 border-white border-t-transparent rounded-full mb-2"></div>
+              <p>Initializing camera...</p>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="mt-4 text-center text-sm text-gray-300">
-        Make sure your full body is visible in the frame for best results.
-        <br />
-        {!cameraReady && "If you see a black screen, please check your camera permissions."}
+      <div className="p-3 bg-gray-100 text-gray-800 border-t border-gray-200">
+        <p className="font-semibold text-red-600">
+          Position instructions:
+        </p>
+        <ul className="text-sm list-disc pl-5 mt-1">
+          <li>Make sure your full body is visible in the frame</li>
+          <li>Camera should be at a side angle to see your pushup form</li>
+          <li>Ensure good lighting for best tracking</li>
+        </ul>
       </div>
     </div>
   );
