@@ -1,0 +1,25 @@
+{
+  "name": "ultimate-pushups-counter",
+  "version": "1.0.0",
+  "description": "Machine learning pushups counter app",
+  "scripts": {
+    "frontend": "cd frontend && npm run dev",
+    "backend": "cd backend && python run.py",
+    "backend:install": "cd backend && pip install -r requirements.txt",
+    "frontend:install": "cd frontend && npm install",
+    "install": "npm run frontend:install && npm run backend:install",
+    "dev": "concurrently \"npm run backend\" \"npm run frontend\""
+  },
+  "keywords": [
+    "nextjs",
+    "python",
+    "machine-learning",
+    "pushups",
+    "fitness"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+} 
