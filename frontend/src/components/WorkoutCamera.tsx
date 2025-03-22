@@ -14,11 +14,13 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
   const [lastType, setLastType] = useState('none');
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
 
   // Setup WebSocket connection
   useEffect(() => {
     // Use environment variable for WebSocket URL with fallback
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/process-video';
+    console.log("Connecting to WebSocket:", wsUrl);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -87,23 +89,32 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
   useEffect(() => {
     const setupCamera = async () => {
       try {
+        console.log("Setting up camera...");
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
             width: { ideal: 640 },
             height: { ideal: 480 }
-          }
+          },
+          audio: false
         });
+
+        console.log("Camera stream obtained:", stream);
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
 
           // Wait for video to be loaded
           videoRef.current.onloadedmetadata = () => {
+            console.log("Video metadata loaded");
+            videoRef.current?.play();
+            setCameraReady(true);
+
             if (videoRef.current && canvasRef.current) {
               // Set canvas dimensions to match video
               canvasRef.current.width = videoRef.current.videoWidth;
               canvasRef.current.height = videoRef.current.videoHeight;
+              console.log(`Canvas size set to ${canvasRef.current.width}x${canvasRef.current.height}`);
             }
           };
         }
@@ -127,8 +138,18 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
 
   // Send video frames to server
   useEffect(() => {
-    if (!socket || !isConnected || !videoRef.current || !canvasRef.current) return;
+    if (!socket || !isConnected || !videoRef.current || !canvasRef.current || !cameraReady) {
+      console.log("Not sending frames because:", {
+        socketExists: !!socket,
+        isConnected,
+        videoExists: !!videoRef.current,
+        canvasExists: !!canvasRef.current,
+        cameraReady
+      });
+      return;
+    }
 
+    console.log("Starting to send video frames");
     let animationFrameId: number;
     const sendFrame = () => {
       if (socket.readyState === WebSocket.OPEN && videoRef.current && canvasRef.current) {
@@ -143,8 +164,12 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
           );
 
           // Convert to base64 and send to server
-          const imageData = canvasRef.current.toDataURL('image/jpeg', 0.7);
-          socket.send(JSON.stringify({ image: imageData }));
+          try {
+            const imageData = canvasRef.current.toDataURL('image/jpeg', 0.7);
+            socket.send(JSON.stringify({ image: imageData }));
+          } catch (err) {
+            console.error("Error sending frame:", err);
+          }
         }
       }
 
@@ -159,7 +184,7 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [socket, isConnected]);
+  }, [socket, isConnected, cameraReady]);
 
   return (
     <div className="flex flex-col items-center">
@@ -170,19 +195,19 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
       )}
 
       <div className="relative w-full max-w-2xl mx-auto overflow-hidden rounded-lg bg-black">
-        {/* Hidden video element to capture webcam */}
+        {/* Video element to capture webcam - now visible */}
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          className="hidden"
+          className="w-full h-auto"
         />
 
-        {/* Canvas to display processed frames */}
+        {/* Canvas to display processed frames - positioned on top of video */}
         <canvas
           ref={canvasRef}
-          className="w-full h-auto"
+          className="absolute top-0 left-0 w-full h-full"
         />
 
         {/* Connection status indicator */}
@@ -190,10 +215,18 @@ export default function WorkoutCamera({ onPushupCounted }: WorkoutCameraProps) {
           }`}>
           {isConnected ? 'Connected' : 'Disconnected'}
         </div>
+
+        {/* Camera status indicator */}
+        <div className={`absolute top-2 left-2 px-2 py-1 rounded text-xs font-semibold ${cameraReady ? 'bg-green-500' : 'bg-yellow-500'
+          }`}>
+          {cameraReady ? 'Camera Ready' : 'Camera Initializing...'}
+        </div>
       </div>
 
       <div className="mt-4 text-center text-sm text-gray-300">
         Make sure your full body is visible in the frame for best results.
+        <br />
+        {!cameraReady && "If you see a black screen, please check your camera permissions."}
       </div>
     </div>
   );
