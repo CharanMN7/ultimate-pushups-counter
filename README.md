@@ -81,7 +81,4 @@ The frontend will be available at `http://localhost:3000`.
 3. Click "Start Recording" and begin doing push-ups
 4. The app will count your push-ups and identify the type in real-time
 5. When you're done, click "Stop Recording" to see your results
-
-## License
-
-MIT 
+ 
