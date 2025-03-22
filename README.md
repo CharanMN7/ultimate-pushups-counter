@@ -10,7 +10,6 @@ A machine learning-based application that counts and classifies push-ups in real
   - Diamond push-ups
   - Wide arm push-ups
   - Pike push-ups
-  - More variations
 - Results screen showing total count and type distribution
 
 ## Tech Stack
