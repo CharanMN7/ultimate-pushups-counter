@@ -46,11 +46,15 @@ A machine learning-based application that counts and classifies push-ups in real
 4. Install dependencies:
    ```
    pip install -r requirements.txt
+   // or
+   pip3 install -r requirements.tsx
    ```
 
 5. Run the backend server:
    ```
    python run.py
+   // or
+   python3 run.py
    ```
 
 The backend will be available at `http://localhost:8000`.
